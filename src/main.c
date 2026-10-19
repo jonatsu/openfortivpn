@@ -217,7 +217,7 @@ int main(int argc, char *argv[])
 {
 	int ret = EXIT_FAILURE;
 	const char *config_file = SYSCONFDIR "/openfortivpn/config";
-	const char *host;
+	char *host;
 	char *port_str;
 
 	struct vpn_config cfg = {
