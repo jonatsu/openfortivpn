@@ -996,12 +996,12 @@ static void parse_split_dns(struct tunnel *tunnel, const char *buffer)
 	if (!tunnel->ipv4.dns_suffix) {
 		char *domains = xml_get(xml_find(' ', "domains=", element, 1));
 
-		// An empty value would leave a bare "search" line behind.
-		if (domains && domains[0] != '\0') {
-			// resolv.conf separates search domains with spaces
-			for (char *c = domains; *c != '\0'; c++)
-				if (*c == ',')
-					*c = ' ';
+		// resolv.conf separates search domains with spaces
+		for (char *c = domains; c && *c != '\0'; c++)
+			if (*c == ',')
+				*c = ' ';
+		// A list with no domain would leave a bare "search" line behind.
+		if (domains && domains[strspn(domains, " \t")] != '\0') {
 			log_debug("Found split dns domains %s in xml config\n",
 			          domains);
 			tunnel->ipv4.dns_suffix = domains;
