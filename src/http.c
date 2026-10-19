@@ -945,6 +945,76 @@ int auth_request_vpn_allocation(struct tunnel *tunnel)
 }
 
 
+/*
+ * Reads the address of the split-DNS server attribute ATTR of a <split-dns>
+ * element into ADDR. Leaves ADDR unchanged when the attribute is missing or
+ * is not an IPv4 address.
+ */
+static void get_split_dns_server(const char *element, const char *attr,
+                                 struct in_addr *addr)
+{
+	char *server = xml_get(xml_find(' ', attr, element, 1));
+	struct in_addr parsed;
+
+	if (!server)
+		return;
+	// Not into addr directly: inet_pton() may write part of a bad value.
+	if (inet_pton(AF_INET, server, &parsed) == 1) {
+		*addr = parsed;
+		log_debug("Found split dns server %s in xml config\n", server);
+	} else {
+		log_warn("Ignoring split dns server that is not an IPv4 address\n");
+	}
+	free(server);
+}
+
+/*
+ * Reads DNS settings from <split-dns domains='a,b' dnsserver1='x'
+ * dnsserver2='y' />, which some gateways send instead of <dns>. Fills only
+ * what <dns> left unset, from the first element only, because the tunnel has
+ * one pair of name servers and one search string.
+ */
+static void parse_split_dns(struct tunnel *tunnel, const char *buffer)
+{
+	const char *element = xml_find('<', "split-dns", buffer, 2);
+	const char *next;
+	int ignored = 0;
+
+	if (!element)
+		return;
+
+	if (!tunnel->ipv4.ns1_addr.s_addr && !tunnel->ipv4.ns2_addr.s_addr) {
+		get_split_dns_server(element, "dnsserver1=",
+		                     &tunnel->ipv4.ns1_addr);
+		get_split_dns_server(element, "dnsserver2=",
+		                     &tunnel->ipv4.ns2_addr);
+	}
+
+	if (!tunnel->ipv4.dns_suffix) {
+		char *domains = xml_get(xml_find(' ', "domains=", element, 1));
+
+		// An empty value would leave a bare "search" line behind.
+		if (domains && domains[0] != '\0') {
+			// resolv.conf separates search domains with spaces
+			for (char *c = domains; *c != '\0'; c++)
+				if (*c == ',')
+					*c = ' ';
+			log_debug("Found split dns domains %s in xml config\n",
+			          domains);
+			tunnel->ipv4.dns_suffix = domains;
+		} else {
+			free(domains);
+		}
+	}
+
+	next = element;
+	while ((next = xml_find('<', "split-dns", next, 2)))
+		ignored++;
+	if (ignored > 0)
+		log_warn("Using only the first of %d split-dns entries\n",
+		         ignored + 1);
+}
+
 static int parse_xml_config(struct tunnel *tunnel, const char *buffer)
 {
 	const char *val;
@@ -994,6 +1064,8 @@ static int parse_xml_config(struct tunnel *tunnel, const char *buffer)
 			free(dns_server);
 		}
 	}
+
+	parse_split_dns(tunnel, buffer);
 
 	// Routes the tunnel wants to push
 	val = xml_find('<', "split-tunnel-info", buffer, 1);
