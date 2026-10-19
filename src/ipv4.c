@@ -1150,6 +1150,8 @@ static inline char *replace_char(char *str, char find, char replace)
  * from becoming the default DNS route, while the split-DNS domains still go
  * to the tunnel's servers. openresolv uses the servers of a -p entry only
  * through a local resolver, so with libc alone the tunnel would have no DNS.
+ * Without domains, -p would leave the tunnel's servers with no names to
+ * answer, so the servers then serve every name instead.
  */
 static const char *split_dns_flag(const struct tunnel *tunnel)
 {
@@ -1157,7 +1159,7 @@ static const char *split_dns_flag(const struct tunnel *tunnel)
 	const char *name;
 	int is_resolvectl;
 
-	if (!tunnel->ipv4.dns_is_split)
+	if (!tunnel->ipv4.dns_is_split || tunnel->ipv4.dns_suffix == NULL)
 		return "";
 	target = realpath(RESOLVCONF_PATH, NULL);
 	if (!target)
