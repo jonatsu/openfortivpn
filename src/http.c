@@ -67,6 +67,75 @@ void url_encode(char *dest, const char *str)
 
 
 /*
+ * Text that precedes a secret value in HTTP traffic, and the characters that
+ * end the value: the session cookie, in headers and page bodies, ends where
+ * auth_set_cookie() ends it, and the one-time SAML session id in a request URI
+ * ends at the next query parameter or whitespace.
+ */
+static const struct {
+	const char *marker;
+	const char *terminators;
+} secret_markers[] = {
+	{ "SVPNCOOKIE=", "\r\n;" },
+	{ "auth_id?id=", "\r\n& '\"" },
+};
+
+/*
+ * Overwrites with '*' every copy of value in text.
+ */
+static void mask_value(char *text, const char *value)
+{
+	size_t length = strlen(value);
+	char *start;
+
+	if (length == 0)
+		return;
+	while ((start = strstr(text, value))) {
+		memset(start, '*', length);
+		text = start + length;
+	}
+}
+
+/*
+ * Overwrites with '*' every secret value in text meant for the log. The value
+ * keeps its length, so the log still shows where a secret was sent.
+ *
+ * Values are found after their markers, which covers a Set-Cookie response
+ * logged before the cookie is parsed, and by the session's known cookie and
+ * SAML id, which covers values that contain a marker's delimiters or appear
+ * without a marker.
+ *
+ * At -vvv nothing is masked, as the password is not either.
+ *
+ * @param[in,out] text  a copy of HTTP traffic, never the data itself
+ */
+static void redact_secrets(const struct tunnel *tunnel, char *text)
+{
+	static const char cookie_prefix[] = "SVPNCOOKIE=";
+
+	if (loglevel > OFV_LOG_DEBUG_DETAILS)
+		return;
+
+	/* Known values first: a marker pass would leave them only partly masked. */
+	if (strncmp(tunnel->cookie, cookie_prefix, strlen(cookie_prefix)) == 0)
+		mask_value(text, tunnel->cookie + strlen(cookie_prefix));
+	mask_value(text, tunnel->config->saml_session_id);
+
+	for (size_t i = 0; i < ARRAY_SIZE(secret_markers); i++) {
+		const char *marker = secret_markers[i].marker;
+		const char *terminators = secret_markers[i].terminators;
+		char *value = text;
+
+		while ((value = strstr(value, marker))) {
+			value += strlen(marker);
+			while (*value != '\0' && !strchr(terminators, *value))
+				*value++ = '*';
+		}
+	}
+}
+
+
+/*
  * Sends data to the HTTP server.
  *
  * @param[in] request  the data to send to the server
@@ -86,20 +155,12 @@ int http_send(struct tunnel *tunnel, const char *request, ...)
 	va_end(args);
 	strcpy(logbuffer, buffer);
 	if (loglevel <= OFV_LOG_DEBUG_DETAILS && tunnel->config->password[0] != '\0') {
-		char *pwstart;
 		char password[3 * PASSWORD_SIZE + 1];
 
 		url_encode(password, tunnel->config->password);
-
-		while ((pwstart = strstr(logbuffer, password))) {
-			int pos, pwlen;
-
-			pos = pwstart - logbuffer;
-			pwlen = strlen(password);
-			for (int i = pos; i < pos + pwlen; i++)
-				logbuffer[i] = '*';
-		}
+		mask_value(logbuffer, password);
 	}
+	redact_secrets(tunnel, logbuffer);
 
 	if (length < 0)
 		return ERR_HTTP_INVALID;
@@ -180,7 +241,15 @@ int http_receive(struct tunnel *tunnel,
 		bytes_read += n;
 		buffer[bytes_read] = '\0';
 
-		log_debug_details("%s:\n%s\n", __func__, buffer);
+		if (loglevel >= OFV_LOG_DEBUG_DETAILS) {
+			char *logbuffer = strdup(buffer);
+
+			if (logbuffer) {
+				redact_secrets(tunnel, logbuffer);
+				log_debug_details("%s:\n%s\n", __func__, logbuffer);
+				free(logbuffer);
+			}
+		}
 
 		if (!header_size) {
 			/* Have we reached the end of the HTTP header? */
@@ -321,8 +390,15 @@ static int http_request(struct tunnel *tunnel, const char *method,
 		ret = do_http_request(tunnel, method, uri, data,
 		                      response, response_size);
 	}
-	if (ret != 1)
-		log_debug("Error issuing %s request\n", uri);
+	if (ret != 1 && loglevel >= OFV_LOG_DEBUG) {
+		char *loguri = strdup(uri);
+
+		if (loguri) {
+			redact_secrets(tunnel, loguri);
+			log_debug("Error issuing %s request\n", loguri);
+			free(loguri);
+		}
+	}
 
 	return ret;
 }
@@ -443,7 +519,8 @@ int auth_set_cookie(struct tunnel *tunnel, const char *line)
 				if (tunnel->cookie[11] == '\0') {
 					log_debug("Empty cookie.\n");
 				} else {
-					log_debug("Cookie: %s\n", tunnel->cookie);
+					log_debug("Got a session cookie of %zu bytes.\n",
+					          cookie_len - 11);
 					ret = 1; // success
 				}
 			}
@@ -691,7 +768,7 @@ int auth_log_in(struct tunnel *tunnel)
 		         required_size,
 		         uri_pattern,
 		         tunnel->config->saml_session_id);
-		log_debug("Using SAML authentication URL %s\n", uri);
+		log_debug("Using the SAML authentication URL with the received session id\n");
 		ret = http_request(tunnel, "GET", uri, "", &res, &response_size);
 		free(uri);
 	} else if (username[0] == '\0' && tunnel->config->password[0] == '\0') {

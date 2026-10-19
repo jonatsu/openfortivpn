@@ -1389,7 +1389,6 @@ int run_tunnel(struct vpn_config *config)
 		goto err_tunnel;
 	}
 	log_info("Authenticated.\n");
-	log_debug("Cookie: %s\n", tunnel.cookie);
 
 	ret = auth_request_vpn_allocation(&tunnel);
 	if (ret != 1) {
