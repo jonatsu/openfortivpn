@@ -61,6 +61,7 @@ struct ipv4_config {
 	struct in_addr	ns1_addr;
 	struct in_addr	ns2_addr;
 	char		*dns_suffix;
+	int		dns_is_split; // ns1/ns2 serve only the dns_suffix domains
 	int		ns1_was_there;  // were ns1 already in /etc/resolv.conf?
 	int		ns2_was_there;  // were ns2 already in /etc/resolv.conf?
 	int		dns_suffix_was_there; // was the dns suffix already there?

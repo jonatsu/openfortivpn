@@ -988,6 +988,9 @@ static void parse_split_dns(struct tunnel *tunnel, const char *buffer)
 		                     &tunnel->ipv4.ns1_addr);
 		get_split_dns_server(element, "dnsserver2=",
 		                     &tunnel->ipv4.ns2_addr);
+		// These servers answer only for the split-DNS domains.
+		tunnel->ipv4.dns_is_split = tunnel->ipv4.ns1_addr.s_addr
+		                            || tunnel->ipv4.ns2_addr.s_addr;
 	}
 
 	if (!tunnel->ipv4.dns_suffix) {
