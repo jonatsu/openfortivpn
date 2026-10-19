@@ -411,7 +411,8 @@ static void debug_bad_packet(struct tunnel *tunnel, uint8_t *header)
 
 	memcpy(buffer, header, 6 * sizeof(uint8_t));
 
-	size = safe_ssl_read(tunnel->ssl_handle, &buffer[6], sizeof(buffer) - 6);
+	// Leave room for the '\0' written after the raw string below.
+	size = safe_ssl_read(tunnel->ssl_handle, &buffer[6], sizeof(buffer) - 7);
 	if (size < 0)
 		return;
 	assert(size <= INT_MAX - 6);
