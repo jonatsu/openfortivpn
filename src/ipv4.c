@@ -741,7 +741,12 @@ static int ipv4_del_route(struct rtentry *route)
  */
 int ipv4_drop_wrong_route(struct tunnel *tunnel)
 {
-	struct rtentry *gtw_rt = &tunnel->ipv4.gtw_rt;
+	/*
+	 * A route of its own: tunnel->ipv4.gtw_rt already holds the protecting
+	 * route to the gateway, which ipv4_restore_routes() must delete later.
+	 */
+	struct rtentry wrong_rt;
+	struct rtentry *gtw_rt = &wrong_rt;
 	int ret;
 
 	route_init(gtw_rt);
@@ -773,11 +778,26 @@ cleanandout:
 	return ret;
 }
 
+/*
+ * Routes the gateway through the current uplink, and backs up the default
+ * route. Run before pppd starts: pppd >= 2.5 gives the tunnel interface the
+ * gateway's address as its peer, and the kernel's route to that peer would
+ * otherwise send traffic for the gateway into the tunnel itself until
+ * ipv4_drop_wrong_route() runs. The gateway then sees packets with a foreign
+ * source address inside the tunnel and stops passing the session's traffic.
+ * An existing host route keeps precedence over the kernel's peer route.
+ *
+ * Does nothing when the route is already protected, so that
+ * ipv4_set_tunnel_routes() can call it again once the tunnel is up.
+ */
 int ipv4_protect_tunnel_route(struct tunnel *tunnel)
 {
 	struct rtentry *gtw_rt = &tunnel->ipv4.gtw_rt;
 	struct rtentry *def_rt = &tunnel->ipv4.def_rt;
 	int ret;
+
+	if (tunnel->ipv4.tunnel_route_protected)
+		return 0;
 
 	route_init(def_rt);
 	route_init(gtw_rt);
@@ -833,6 +853,7 @@ int ipv4_protect_tunnel_route(struct tunnel *tunnel)
 		log_warn("Could not set route to vpn server (%s).\n",
 		         err_ipv4_str(ret));
 
+	tunnel->ipv4.tunnel_route_protected = 1;
 	return 0;
 
 err_destroy_gtw_rt:
@@ -841,6 +862,28 @@ err_destroy_def_rt:
 	route_destroy(def_rt);
 	tunnel->ipv4.route_to_vpn_is_added = 0;
 	return ret;
+}
+
+/*
+ * Undoes ipv4_protect_tunnel_route() when the tunnel never came up, so
+ * ipv4_restore_routes() will not run.
+ */
+void ipv4_unprotect_tunnel_route(struct tunnel *tunnel)
+{
+	if (!tunnel->ipv4.tunnel_route_protected)
+		return;
+
+	if (tunnel->ipv4.route_to_vpn_is_added) {
+		int ret = ipv4_del_route(&tunnel->ipv4.gtw_rt);
+
+		if (ret != 0)
+			log_warn("Could not delete route to vpn server (%s).\n",
+			         err_ipv4_str(ret));
+	}
+	route_destroy(&tunnel->ipv4.gtw_rt);
+	route_destroy(&tunnel->ipv4.def_rt);
+	tunnel->ipv4.route_to_vpn_is_added = 0;
+	tunnel->ipv4.tunnel_route_protected = 0;
 }
 
 #if HAVE_USR_SBIN_PPPD
@@ -1084,6 +1127,8 @@ int ipv4_restore_routes(struct tunnel *tunnel)
 	route_destroy(ppp_rt);
 	route_destroy(def_rt);
 	route_destroy(gtw_rt);
+	tunnel->ipv4.route_to_vpn_is_added = 0;
+	tunnel->ipv4.tunnel_route_protected = 0;
 
 	return 0;
 }
