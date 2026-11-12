@@ -988,6 +988,7 @@ static void parse_split_dns(struct tunnel *tunnel, const char *buffer)
 	const char *element = xml_find('<', "split-dns", buffer, 2);
 	const char *next;
 	int ignored = 0;
+	int have_servers = 0, have_domains = 0;
 
 	if (!element)
 		return;
@@ -997,6 +998,8 @@ static void parse_split_dns(struct tunnel *tunnel, const char *buffer)
 		                     &tunnel->ipv4.ns1_addr);
 		get_split_dns_server(element, "dnsserver2=",
 		                     &tunnel->ipv4.ns2_addr);
+		have_servers = tunnel->ipv4.ns1_addr.s_addr
+		               || tunnel->ipv4.ns2_addr.s_addr;
 	}
 
 	if (!tunnel->ipv4.dns_suffix) {
@@ -1011,10 +1014,18 @@ static void parse_split_dns(struct tunnel *tunnel, const char *buffer)
 			log_debug("Found split dns domains %s in xml config\n",
 			          domains);
 			tunnel->ipv4.dns_suffix = domains;
+			have_domains = 1;
 		} else {
 			free(domains);
 		}
 	}
+
+	/*
+	 * The servers answer only for the domains listed with them. Keep them
+	 * to those domains only when they are the search domains: with no
+	 * domains, or with the domain from <dns>, they must serve every name.
+	 */
+	tunnel->ipv4.dns_is_split = have_servers && have_domains;
 
 	next = element;
 	while ((next = xml_find('<', "split-dns", next, 2)))

@@ -1142,6 +1142,39 @@ static inline char *replace_char(char *str, char find, char replace)
 	return str;
 }
 
+#if HAVE_RESOLVCONF
+/*
+ * Returns the resolvconf option that keeps split-DNS servers to their own
+ * domains, or "" when there is none to give.
+ *
+ * Only systemd-resolved's resolvconf mode gets -p: there it stops the tunnel
+ * from becoming the default DNS route, while the split-DNS domains still go
+ * to the tunnel's servers. openresolv uses the servers of a -p entry only
+ * through a local resolver, so with libc alone the tunnel would have no DNS.
+ */
+static const char *split_dns_flag(const struct tunnel *tunnel)
+{
+	char *target;
+	const char *name;
+	int is_resolvectl;
+
+	if (!tunnel->ipv4.dns_is_split)
+		return "";
+	target = realpath(RESOLVCONF_PATH, NULL);
+	if (!target)
+		return "";
+	name = strrchr(target, '/');
+	is_resolvectl = strcmp(name ? name + 1 : target, "resolvectl") == 0;
+	free(target);
+	if (!is_resolvectl) {
+		log_debug("%s is not systemd-resolved, so split DNS also serves other names\n",
+		          RESOLVCONF_PATH);
+		return "";
+	}
+	return " -p";
+}
+#endif
+
 int ipv4_add_nameservers_to_resolv_conf(struct tunnel *tunnel)
 {
 	int ret = -1;
@@ -1173,9 +1206,10 @@ int ipv4_add_nameservers_to_resolv_conf(struct tunnel *tunnel)
 	    && (access(RESOLVCONF_PATH, F_OK) == 0)) {
 		int resolvconf_call_len;
 		char *resolvconf_call;
+		const char *flag = split_dns_flag(tunnel);
 
 		log_debug("Attempting to run %s.\n", RESOLVCONF_PATH);
-		resolvconf_call_len = strlen(RESOLVCONF_PATH) + 20
+		resolvconf_call_len = strlen(RESOLVCONF_PATH) + 20 + strlen(flag)
 		                      + strlen(tunnel->ppp_iface);
 		resolvconf_call = malloc(resolvconf_call_len);
 		if (resolvconf_call == NULL) {
@@ -1185,8 +1219,9 @@ int ipv4_add_nameservers_to_resolv_conf(struct tunnel *tunnel)
 		}
 
 		snprintf(resolvconf_call, resolvconf_call_len,
-		         "%s -a \"%s.openfortivpn\"",
+		         "%s%s -a \"%s.openfortivpn\"",
 		         RESOLVCONF_PATH,
+		         flag,
 		         tunnel->ppp_iface);
 
 		use_resolvconf = 1;

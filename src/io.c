@@ -400,11 +400,14 @@ static inline void set_tunnel_ips(struct tunnel *tunnel,
 	    && tunnel->config->pppd_use_peerdns) {
 		memcpy(&tunnel->ipv4.ns1_addr.s_addr, &pkt_data(packet)[14],
 		       sizeof(uint32_t));
+		// Servers from IPCP are not limited to the split-DNS domains.
+		tunnel->ipv4.dns_is_split = 0;
 	}
 	if (packet->len >= 24 && pkt_data(packet)[18] == 0x83
 	    && tunnel->config->pppd_use_peerdns) {
 		memcpy(&tunnel->ipv4.ns2_addr.s_addr, &pkt_data(packet)[20],
 		       sizeof(uint32_t));
+		tunnel->ipv4.dns_is_split = 0;
 	}
 }
 
