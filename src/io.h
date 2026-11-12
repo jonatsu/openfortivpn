@@ -56,8 +56,10 @@ struct ppp_packet_pool {
 
 struct tunnel;
 
+int io_set_signal_handlers(void);
 int io_loop(struct tunnel *tunnel);
 
 int get_sig_received(void);
+void set_sig_received(int signo);
 
 #endif

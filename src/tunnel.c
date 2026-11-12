@@ -205,6 +205,13 @@ static int pppd_run(struct tunnel *tunnel)
 	if (pid == 0) { // child process
 
 		struct ofv_varr pppd_args = { 0, 0, NULL };
+		sigset_t stop_signals;
+
+		// run_tunnel() holds these back; pppd must still receive them.
+		sigemptyset(&stop_signals);
+		sigaddset(&stop_signals, SIGINT);
+		sigaddset(&stop_signals, SIGTERM);
+		sigprocmask(SIG_UNBLOCK, &stop_signals, NULL);
 
 		dup2(slave_stderr, STDERR_FILENO);
 		if (close(slave_stderr))
@@ -1347,9 +1354,44 @@ err_tcp_connect:
 	return 1;
 }
 
+/*
+ * Holds back SIGINT and SIGTERM until their handlers are installed. Without a
+ * handler, either signal would end the process before it stops pppd and logs
+ * out of the gateway.
+ */
+static void hold_stop_signals(sigset_t *held, sigset_t *saved)
+{
+	sigemptyset(held);
+	sigaddset(held, SIGINT);
+	sigaddset(held, SIGTERM);
+	sigprocmask(SIG_BLOCK, held, saved);
+}
+
+/*
+ * Ends hold_stop_signals(): consumes each held signal that arrived meanwhile,
+ * records it as sig_handler() would, and restores the signal mask.
+ */
+static void release_stop_signals(const sigset_t *held, const sigset_t *saved)
+{
+	sigset_t pending;
+
+	while (sigpending(&pending) == 0
+	       && (sigismember(&pending, SIGINT)
+	           || sigismember(&pending, SIGTERM))) {
+		int signo;
+
+		if (sigwait(held, &signo) != 0)
+			break;
+		set_sig_received(signo);
+	}
+	sigprocmask(SIG_SETMASK, saved, NULL);
+}
+
 int run_tunnel(struct vpn_config *config)
 {
 	int ret;
+	sigset_t stop_signals, saved_mask;
+	int stop_signals_held = 0;
 	struct tunnel tunnel = {
 		.config = config,
 		.state = STATE_DOWN,
@@ -1413,6 +1455,9 @@ int run_tunnel(struct vpn_config *config)
 		goto err_tunnel;
 	}
 
+	hold_stop_signals(&stop_signals, &saved_mask);
+	stop_signals_held = 1;
+
 	// Step 4: run a pppd process
 	log_debug("Establishing the tunnel\n");
 	ret = pppd_run(&tunnel);
@@ -1428,6 +1473,18 @@ int run_tunnel(struct vpn_config *config)
 	                tunnel.cookie);
 	if (ret != 1) {
 		log_error("Could not start tunnel (%s).\n", err_http_str(ret));
+		goto err_start_tunnel;
+	}
+
+	// Handlers first, so no signal meets the default action once released.
+	if (io_set_signal_handlers()) {
+		log_error("Could not set signal handlers.\n");
+		goto err_start_tunnel;
+	}
+	stop_signals_held = 0;
+	release_stop_signals(&stop_signals, &saved_mask);
+	if (get_sig_received() == SIGINT || get_sig_received() == SIGTERM) {
+		log_info("Stopping before the tunnel started.\n");
 		goto err_start_tunnel;
 	}
 
@@ -1448,6 +1505,8 @@ err_start_tunnel:
 	ret = pppd_terminate(&tunnel);
 	log_info("Terminated %s.\n", PPP_DAEMON);
 err_tunnel:
+	if (stop_signals_held)
+		release_stop_signals(&stop_signals, &saved_mask);
 	log_info("Closed connection to gateway.\n");
 	tunnel.state = STATE_DOWN;
 

@@ -116,10 +116,17 @@ static void destroy_ssl_locks(void)
 
 // global variable to pass signal out of its handler
 volatile sig_atomic_t sig_received; //static variables are initialized to zero in C99
+// whether sem_stop_io is initialized, so the signal handler may post to it
+static volatile sig_atomic_t stop_io_ready;
 
 int get_sig_received(void)
 {
 	return (int)sig_received;
+}
+
+void set_sig_received(int signo)
+{
+	sig_received = signo;
 }
 
 /*
@@ -613,8 +620,25 @@ error:
 static void sig_handler(int signo)
 {
 	sig_received = signo;
-	if (signo == SIGINT || signo == SIGTERM)
+	if ((signo == SIGINT || signo == SIGTERM) && stop_io_ready)
 		SEM_POST(&sem_stop_io);
+}
+
+/*
+ * Installs the handlers for SIGINT and SIGTERM, which record the signal and
+ * stop io_loop(), and ignores SIGHUP. run_tunnel() calls this before
+ * io_loop(), while it still holds both signals back, so that neither ends the
+ * process with its default action once pppd runs.
+ *
+ * @return  0 on success, 1 when a handler cannot be installed
+ */
+int io_set_signal_handlers(void)
+{
+	if (signal(SIGINT, sig_handler) == SIG_ERR ||
+	    signal(SIGTERM, sig_handler) == SIG_ERR ||
+	    signal(SIGHUP, SIG_IGN) == SIG_ERR)
+		return 1;
+	return 0;
 }
 
 int io_loop(struct tunnel *tunnel)
@@ -632,6 +656,10 @@ int io_loop(struct tunnel *tunnel)
 	SEM_INIT(&sem_pppd_ready, 0, 0);
 	SEM_INIT(&sem_if_config, 0, 0);
 	SEM_INIT(&sem_stop_io, 0, 0);
+	stop_io_ready = 1;
+	// A stop signal recorded before the semaphore existed stops at once.
+	if (sig_received == SIGINT || sig_received == SIGTERM)
+		SEM_POST(&sem_stop_io);
 
 	init_ppp_packet_pool(&tunnel->ssl_to_pty_pool);
 	init_ppp_packet_pool(&tunnel->pty_to_ssl_pool);
@@ -667,15 +695,6 @@ int io_loop(struct tunnel *tunnel)
 	sigaddset(&sigset, SIGTERM);
 	pthread_sigmask(SIG_BLOCK, &sigset, &oldset);
 #endif
-
-	// Set signal handler
-	if (signal(SIGINT, sig_handler) == SIG_ERR ||
-	    signal(SIGTERM, sig_handler) == SIG_ERR)
-		goto err_signal;
-
-	// Ignore SIGHUP
-	if (signal(SIGHUP, SIG_IGN) == SIG_ERR)
-		goto err_signal;
 
 	// create all workers, stop on first error and bail out
 	ret = pthread_create(&pty_read_thread, NULL, pppd_read, tunnel);
@@ -775,6 +794,7 @@ int io_loop(struct tunnel *tunnel)
 	destroy_ppp_packet_pool(&tunnel->pty_to_ssl_pool);
 	destroy_ppp_packet_pool(&tunnel->ssl_to_pty_pool);
 
+	stop_io_ready = 0;
 	SEM_DESTROY(&sem_stop_io);
 	SEM_DESTROY(&sem_if_config);
 	SEM_DESTROY(&sem_pppd_ready);
@@ -786,7 +806,7 @@ int io_loop(struct tunnel *tunnel)
 	return 0;
 
 err_thread:
-err_signal:
 err_sockopt:
+	stop_io_ready = 0;
 	return 1;
 }
