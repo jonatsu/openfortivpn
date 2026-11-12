@@ -1356,8 +1356,8 @@ err_tcp_connect:
 
 /*
  * Holds back SIGINT and SIGTERM until their handlers are installed. Without a
- * handler, either signal would end the process before it stops pppd and logs
- * out of the gateway.
+ * handler, either signal would end the process before it removes the route to
+ * the gateway, stops pppd, and logs out of the gateway.
  */
 static void hold_stop_signals(sigset_t *held, sigset_t *saved)
 {
@@ -1458,6 +1458,14 @@ int run_tunnel(struct vpn_config *config)
 	hold_stop_signals(&stop_signals, &saved_mask);
 	stop_signals_held = 1;
 
+	// Keep traffic for the gateway out of the tunnel pppd is about to set up.
+	if (tunnel.config->set_routes) {
+		ret = ipv4_protect_tunnel_route(&tunnel);
+		if (ret != 0)
+			log_warn("Could not protect the route to the gateway before starting %s.\n",
+			         PPP_DAEMON);
+	}
+
 	// Step 4: run a pppd process
 	log_debug("Establishing the tunnel\n");
 	ret = pppd_run(&tunnel);
@@ -1505,6 +1513,8 @@ err_start_tunnel:
 	ret = pppd_terminate(&tunnel);
 	log_info("Terminated %s.\n", PPP_DAEMON);
 err_tunnel:
+	// No-op once ipv4_restore_routes() has run on the way down.
+	ipv4_unprotect_tunnel_route(&tunnel);
 	if (stop_signals_held)
 		release_stop_signals(&stop_signals, &saved_mask);
 	log_info("Closed connection to gateway.\n");

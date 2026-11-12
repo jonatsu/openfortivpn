@@ -66,6 +66,7 @@ struct ipv4_config {
 	int		dns_suffix_was_there; // was the dns suffix already there?
 	int		split_routes;
 	int		route_to_vpn_is_added;
+	int		tunnel_route_protected; // def_rt and gtw_rt are set up
 
 	struct rtentry	def_rt; // default route
 	struct rtentry	gtw_rt; // route to access VPN gateway
@@ -86,6 +87,8 @@ static inline struct sockaddr_in *cast_addr(struct sockaddr *addr)
 struct tunnel;
 
 int ipv4_drop_wrong_route(struct tunnel *tunnel);
+int ipv4_protect_tunnel_route(struct tunnel *tunnel);
+void ipv4_unprotect_tunnel_route(struct tunnel *tunnel);
 int ipv4_add_split_vpn_route(struct tunnel *tunnel, char *dest, char *mask,
                              char *gateway);
 int ipv4_set_tunnel_routes(struct tunnel *tunnel);
